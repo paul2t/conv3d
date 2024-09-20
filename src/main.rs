@@ -9,7 +9,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     fs::{File, OpenOptions},
     io::BufWriter,
-    path::{Path, PathBuf},
+    path::Path,
 };
 use stl_io::IndexedMesh;
 
@@ -63,25 +63,36 @@ fn main() {
         let mut outpath = path.clone();
         outpath.set_extension(get_extension(app.output_format.to_owned()));
         if outpath != *path {
-            let gltf = if app.output_format == FileFormat::Glb {
-                convert_stl_to_glb(stl, path).unwrap()
-            } else if app.output_format == FileFormat::Gltf {
-                let mut output_bin_name = PathBuf::from(path.file_name().unwrap()).to_owned();
-                output_bin_name.set_extension("bin");
-                convert_stl_to_gltf(stl, path, output_bin_name).unwrap()
-            } else {
-                unimplemented!()
-            };
+            let gltf =
+                if app.output_format == FileFormat::Glb || app.output_format == FileFormat::Gltf {
+                    convert_stl_to_gltf(stl, path).unwrap()
+                } else {
+                    unimplemented!()
+                };
             let file = File::create(outpath.clone()).unwrap();
             let writer = BufWriter::new(file);
             if app.output_format == FileFormat::Glb {
-                gltf.write_to_glb(writer).unwrap();
+                let glb = gltf.to_glb().unwrap();
+                glb.to_writer(writer).unwrap();
             } else if app.output_format == FileFormat::Gltf {
                 let file = File::create(outpath.clone()).unwrap();
                 let writer = BufWriter::new(file);
-                let bin_file = File::create(outpath.clone()).unwrap();
-                let bin_writer = BufWriter::new(bin_file);
-                gltf.write_to_gltf(writer, bin_writer).unwrap();
+                let mut gltf = gltf.merge_gltf_buffers().unwrap();
+                gltf.set_buffer_uri(
+                    0,
+                    Some(format!(
+                        "{}.bin",
+                        outpath
+                            .file_stem()
+                            .unwrap_or_default()
+                            .to_str()
+                            .unwrap_or_default()
+                    )),
+                )
+                .unwrap();
+                gltf.write_to_gltf(writer).unwrap();
+                gltf.write_all_buffers(outpath.parent().unwrap_or(Path::new(".")))
+                    .unwrap();
             }
 
             println!("Output: {}", outpath.display());
@@ -114,16 +125,6 @@ fn bounding_coords(points: &[VertexNormal]) -> ([f32; 3], [f32; 3]) {
 fn convert_stl_to_gltf(
     stl: IndexedMesh,
     input_filename: impl AsRef<Path>,
-    out_bin_name: impl AsRef<Path>,
-) -> Result<GltfBuilder, String> {
-    let mut glb = convert_stl_to_glb(stl, &input_filename).unwrap();
-    glb.set_text(out_bin_name.as_ref().to_string_lossy().to_string());
-    Ok(glb)
-}
-
-fn convert_stl_to_glb(
-    stl: IndexedMesh,
-    input_filename: impl AsRef<Path>,
 ) -> Result<GltfBuilder, String> {
     let mesh_name = input_filename
         .as_ref()
@@ -132,7 +133,7 @@ fn convert_stl_to_glb(
         .to_string_lossy()
         .to_string();
 
-    let mut gltf = GltfBuilder::new_glb();
+    let mut gltf = GltfBuilder::new();
     let with_indices = true;
 
     let mut vertices_normals: Vec<VertexNormal> = stl
@@ -195,12 +196,14 @@ fn convert_stl_to_glb(
         gltf.push_buffer_with_view(
             Some("positions_normals".to_string()),
             vertices_normals,
+            Some(1),
             None,
         )
     } else {
         gltf.push_buffer_with_view(
             Some("positions_normals".to_string()),
             vertices_normals_noind,
+            Some(1),
             None,
         )
     };
@@ -234,7 +237,8 @@ fn convert_stl_to_glb(
         })
         .collect::<Vec<_>>();
     let nb_indices = indices.len();
-    let indices_view = gltf.push_buffer_with_view(Some("indices".to_string()), indices, None);
+    let indices_view =
+        gltf.push_buffer_with_view(Some("indices".to_string()), indices, Some(1), None);
     let indices = if with_indices {
         Some(gltf.push_accessor_u32(Some("indices".to_string()), indices_view, 0, nb_indices))
     } else {
@@ -258,7 +262,8 @@ fn convert_stl_to_glb(
 
     let mesh = gltf.push_mesh(Some(mesh_name), vec![primitive], None);
     let node = gltf.push_node(mesh);
-    gltf.push_scene(vec![node]);
+    let scene = gltf.push_scene(vec![node]);
+    gltf.set_default_scene(Some(scene));
 
     Ok(gltf)
 }
