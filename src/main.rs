@@ -102,18 +102,17 @@ fn main() {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(C)]
-struct VertexNormal {
-    position: [f32; 3],
-    normal: [f32; 3],
+struct V3 {
+    v: [f32; 3],
 }
 
 /// Calculate bounding coordinates of a list of vertices, used for the clipping distance of the model
-fn bounding_coords(points: &[VertexNormal]) -> ([f32; 3], [f32; 3]) {
+fn bounding_coords(points: &[V3]) -> ([f32; 3], [f32; 3]) {
     let mut min = [f32::MAX, f32::MAX, f32::MAX];
     let mut max = [f32::MIN, f32::MIN, f32::MIN];
 
     for point in points {
-        let p = point.position;
+        let p = point.v;
         for i in 0..3 {
             min[i] = f32::min(min[i], p[i]);
             max[i] = f32::max(max[i], p[i]);
@@ -136,81 +135,48 @@ fn convert_stl_to_gltf(
     let mut gltf = GltfBuilder::new();
     let with_indices = true;
 
-    let mut vertices_normals: Vec<VertexNormal> = stl
+    let (positions, mut normals) = stl
         .vertices
         .iter()
-        .map(|it| VertexNormal {
-            position: [it[0], it[1], it[2]],
-            normal: [0.0, 0.0, 0.0],
+        .map(|it| {
+            (
+                V3 {
+                    v: [it[0], it[1], it[2]],
+                },
+                V3 { v: [0.0, 0.0, 0.0] },
+            )
         })
-        .collect::<Vec<_>>();
+        .collect::<(Vec<V3>, Vec<V3>)>();
 
-    let mut normals_count = vec![0; vertices_normals.len()];
+    let mut normals_count = vec![0; normals.len()];
     for face in &stl.faces {
         for vi in face.vertices {
-            vertices_normals[vi].normal[0] += face.normal[0];
-            vertices_normals[vi].normal[1] += face.normal[1];
-            vertices_normals[vi].normal[2] += face.normal[2];
+            normals[vi].v[0] += face.normal[0];
+            normals[vi].v[1] += face.normal[1];
+            normals[vi].v[2] += face.normal[2];
             normals_count[vi] += 1;
         }
     }
 
     // normalize
-    for i in 0..vertices_normals.len() {
-        let n = vertices_normals[i].normal;
+    for i in 0..normals.len() {
+        let n = normals[i].v;
         let count = normals_count[i] as f32;
-        vertices_normals[i].normal = [n[0] / count, n[1] / count, n[2] / count];
+        normals[i].v = [n[0] / count, n[1] / count, n[2] / count];
     }
 
-    let vertices_normals_noind = stl
-        .faces
-        .iter()
-        .flat_map(|it| {
-            let vs = &stl.vertices;
-            let v = &it.vertices;
-            [
-                VertexNormal {
-                    position: [vs[v[0]][0], vs[v[0]][1], vs[v[0]][2]],
-                    normal: vertices_normals[v[0]].normal,
-                },
-                VertexNormal {
-                    position: [vs[v[1]][0], vs[v[1]][1], vs[v[1]][2]],
-                    normal: vertices_normals[v[1]].normal,
-                },
-                VertexNormal {
-                    position: [vs[v[2]][0], vs[v[2]][1], vs[v[2]][2]],
-                    normal: vertices_normals[v[2]].normal,
-                },
-            ]
-        })
-        .collect::<Vec<_>>();
+    let (min, max) = bounding_coords(&positions);
+    println!("min: {min:?} max: {max:?}");
+    let vcount = positions.len();
 
-    let (min, max) = bounding_coords(&vertices_normals);
-    let vcount = if with_indices {
-        vertices_normals.len()
-    } else {
-        vertices_normals_noind.len()
-    };
+    let positions_view =
+        gltf.push_buffer_with_view(Some("positions".to_string()), positions, None, None);
 
-    let buffer_view = if with_indices {
-        gltf.push_buffer_with_view(
-            Some("positions_normals".to_string()),
-            vertices_normals,
-            Some(1),
-            None,
-        )
-    } else {
-        gltf.push_buffer_with_view(
-            Some("positions_normals".to_string()),
-            vertices_normals_noind,
-            Some(1),
-            None,
-        )
-    };
+    let normals_view = gltf.push_buffer_with_view(Some("normals".to_string()), normals, None, None);
 
     let positions = gltf.push_accessor_vec3(
         Some("positions".to_string()),
-        buffer_view,
+        positions_view,
         0,
         vcount,
         Some(min),
@@ -218,7 +184,7 @@ fn convert_stl_to_gltf(
     );
     let normals = gltf.push_accessor_vec3(
         Some("normals".to_string()),
-        buffer_view,
+        normals_view,
         3,
         vcount,
         None,
